@@ -1,0 +1,1228 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CropTrace — 이미지 크롭 좌표 기록 도구</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" onerror="window.__jszipLoadError=true"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #1b1e24; --panel: #23272f; --panel2: #2a2f39; --border: #3a4150;
+    --text: #e6e9ef; --dim: #9aa3b2; --accent: #4da3ff; --accent2: #ffb84d;
+    --danger: #ff6b6b;
+  }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+      "Malgun Gothic", sans-serif;
+    background: var(--bg); color: var(--text);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+
+  /* ── header / toolbar ─────────────────────────────── */
+  header {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 16px; font-weight: 700; margin-right: 8px; color: var(--accent); cursor: pointer; }
+  header h1:hover { filter: brightness(1.25); }
+  header h1 span { color: var(--dim); font-weight: 400; font-size: 12px; margin-left: 6px; }
+  .tb-group { display: flex; align-items: center; gap: 4px; }
+  .tb-sep { width: 1px; height: 22px; background: var(--border); margin: 0 4px; }
+  .tb-spacer { flex: 1; }
+  button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 10px; font-size: 12.5px; cursor: pointer;
+    white-space: nowrap;
+  }
+  button:hover:not(:disabled) { background: #343b48; border-color: #4a5468; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.primary { background: #1e4c7d; border-color: #2f6cab; }
+  button.primary:hover:not(:disabled) { background: #265e94; }
+  #zoomLevel { min-width: 52px; text-align: center; font-size: 12px; color: var(--dim); cursor: pointer; }
+  #zoomLevel:hover { color: var(--text); }
+  #labelWrap { display: flex; align-items: center; gap: 6px; }
+  #labelWrap label { font-size: 12.5px; color: var(--dim); }
+  #labelInput {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); padding: 5px 8px; font-size: 12.5px; width: 160px;
+  }
+  #labelInput:focus { outline: none; border-color: var(--accent); }
+
+  /* ── layout ───────────────────────────────────────── */
+  main { flex: 1; display: flex; min-height: 0; }
+  #sidebar {
+    width: 230px; background: var(--panel); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  #sidebar .side-head {
+    padding: 8px 12px; font-size: 12px; color: var(--dim);
+    border-bottom: 1px solid var(--border); display: flex; justify-content: space-between;
+  }
+  #imageList { flex: 1; overflow-y: auto; list-style: none; }
+  #imageList li {
+    padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #262b34;
+    display: flex; align-items: center; gap: 8px; font-size: 12.5px;
+  }
+  #imageList li:hover { background: var(--panel2); }
+  #imageList li.active { background: #1e3a5c; }
+  #imageList li .fname {
+    flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #imageList li .count {
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 1px 8px; font-size: 11px; color: var(--dim); flex-shrink: 0;
+  }
+  #imageList li.active .count { background: #2f6cab; color: #fff; border-color: #2f6cab; }
+  #imageList li .restored { color: var(--accent2); font-size: 11px; flex-shrink: 0; }
+  #imageList li .thumb {
+    width: 48px; height: 34px; border-radius: 4px; border: 1px solid var(--border);
+    flex-shrink: 0; background: #111; object-fit: cover;
+  }
+
+  /* 현재 이미지 박스 목록 */
+  #boxSection { border-top: 1px solid var(--border); display: flex; flex-direction: column; max-height: 38%; }
+  #boxList { overflow-y: auto; list-style: none; }
+  #boxList li {
+    padding: 6px 12px; display: flex; align-items: center; gap: 8px;
+    cursor: pointer; font-size: 12px; border-bottom: 1px solid #262b34;
+  }
+  #boxList li:hover { background: var(--panel2); }
+  #boxList li.active { background: #46371c; }
+  #boxList .bidx { color: var(--accent2); font-family: ui-monospace, Menlo, monospace; font-size: 11px; flex-shrink: 0; }
+  #boxList .blabel { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #boxList .blabel.empty { color: var(--dim); font-style: italic; }
+  #boxList .bcoord { color: var(--dim); font-size: 10.5px; font-family: ui-monospace, Menlo, monospace; flex-shrink: 0; }
+  #boxList .bdel { padding: 0 6px; font-size: 11px; color: var(--danger); border: none; background: none; }
+  #boxList li.box-empty { color: var(--dim); font-style: italic; cursor: default; border-bottom: none; }
+
+  #stage { flex: 1; position: relative; min-width: 0; background: #14161b; }
+  #canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  #emptyMsg {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 10px; color: var(--dim);
+    font-size: 14px; pointer-events: none; text-align: center; line-height: 1.7;
+  }
+  #stage.dragover::after {
+    content: "이미지를 놓으면 불러옵니다"; position: absolute; inset: 8px;
+    border: 2px dashed var(--accent); border-radius: 12px; display: flex;
+    align-items: center; justify-content: center; font-size: 16px; color: var(--accent);
+    background: rgba(77,163,255,.08); pointer-events: none;
+  }
+
+  /* ── home (프로젝트 화면) ─────────────────────────── */
+  body.home-mode main { display: none; }
+  body.home-mode header .tb-group, body.home-mode header .tb-sep,
+  body.home-mode header #labelWrap { display: none; }
+  body.home-mode footer #cursorPos { display: none; }
+  #homeView { flex: 1; display: none; justify-content: center; padding: 8vh 20px 40px; overflow-y: auto; }
+  body.home-mode #homeView { display: flex; }
+  .home-box { width: 580px; max-width: 100%; }
+  .home-box h2 { font-size: 20px; margin-bottom: 6px; }
+  .home-desc { color: var(--dim); font-size: 13px; margin-bottom: 18px; line-height: 1.6; }
+  .new-proj { display: flex; gap: 8px; margin-bottom: 18px; }
+  .new-proj input {
+    flex: 1; background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    color: var(--text); padding: 10px 12px; font-size: 14px;
+  }
+  .new-proj input:focus { outline: none; border-color: var(--accent); }
+  .new-proj button { padding: 10px 18px; font-size: 14px; }
+  #projList {
+    list-style: none; display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px;
+  }
+  #projList li {
+    position: relative; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px 10px 14px; display: flex; flex-direction: column;
+    align-items: center; gap: 6px; cursor: pointer; text-align: center;
+  }
+  #projList li:hover { border-color: var(--accent); background: var(--panel2); }
+  #projList .picon { font-size: 42px; line-height: 1; }
+  #projList .pname {
+    font-size: 13px; font-weight: 600; max-width: 100%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #projList .pmeta { color: var(--dim); font-size: 11px; }
+  #projList .pdel {
+    position: absolute; top: 6px; right: 6px; padding: 1px 7px;
+    font-size: 12px; color: var(--danger); border-radius: 6px; opacity: 0;
+  }
+  #projList li:hover .pdel { opacity: 1; }
+  .home-empty {
+    grid-column: 1 / -1; color: var(--dim); font-size: 13px; text-align: center;
+    padding: 24px 0 !important; border: 1px dashed var(--border) !important;
+    background: none !important;
+  }
+  .home-note { color: var(--dim); font-size: 11.5px; margin-top: 14px; line-height: 1.6; }
+  #projName {
+    color: var(--dim); font-size: 13px; max-width: 200px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* ── footer ───────────────────────────────────────── */
+  footer {
+    background: var(--panel); border-top: 1px solid var(--border);
+    padding: 6px 12px; font-size: 11.5px; color: var(--dim);
+    display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  }
+  #statusMsg { color: var(--accent2); }
+  #cursorPos { font-variant-numeric: tabular-nums; }
+  kbd {
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 4px;
+    padding: 0 4px; font-size: 10.5px; font-family: inherit;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="logo" title="프로젝트 화면으로 이동">CropTrace<span>크롭 좌표 기록 도구</span></h1>
+  <div class="tb-group">
+    <button id="btnHome" title="프로젝트 목록으로">← 프로젝트</button>
+    <span id="projName"></span>
+  </div>
+  <div class="tb-sep"></div>
+  <div class="tb-group">
+    <button id="btnOpen" class="primary">이미지 열기</button>
+    <button id="btnOpenDir" class="primary">폴더 열기</button>
+    <button id="btnImportJson">JSON 불러오기</button>
+  </div>
+  <div class="tb-sep"></div>
+  <div class="tb-group">
+    <button id="btnPrev" title="이전 이미지 (←)">◀</button>
+    <button id="btnNext" title="다음 이미지 (→)">▶</button>
+  </div>
+  <div class="tb-sep"></div>
+  <div class="tb-group">
+    <button id="btnZoomOut" title="축소">−</button>
+    <span id="zoomLevel" title="클릭: 화면에 맞춤">100%</span>
+    <button id="btnZoomIn" title="확대">＋</button>
+    <button id="btnFit" title="화면에 맞춤">맞춤</button>
+    <button id="btnZoom100" title="원본 크기 (100%)">1:1</button>
+  </div>
+  <div class="tb-spacer"></div>
+  <div class="tb-group">
+    <button id="btnCsv">CSV 내보내기</button>
+    <button id="btnJson">JSON 내보내기</button>
+    <button id="btnZip">전체 내보내기 (ZIP)</button>
+  </div>
+  <div class="tb-sep"></div>
+  <div class="tb-group" id="labelWrap">
+    <label for="labelInput">라벨:</label>
+    <input id="labelInput" type="text" placeholder="선택한 박스의 라벨" disabled>
+    <button id="btnDelete" disabled>박스 삭제</button>
+  </div>
+  <input type="file" id="fileInput" accept="image/*" multiple hidden>
+  <input type="file" id="dirInput" webkitdirectory hidden>
+  <input type="file" id="jsonInput" accept=".json,application/json" hidden>
+</header>
+
+<div id="homeView">
+  <div class="home-box">
+    <h2>프로젝트</h2>
+    <p class="home-desc">작업은 프로젝트 단위로 관리됩니다. 새 프로젝트를 만들거나
+      기존 프로젝트를 선택해 들어가세요.</p>
+    <div class="new-proj">
+      <input id="projInput" type="text" placeholder="새 프로젝트 이름 (예: 2026_조류_데이터셋)" maxlength="80">
+      <button id="btnCreateProj" class="primary">만들기</button>
+    </div>
+    <ul id="projList"></ul>
+    <p class="home-note">⚠ 프로젝트와 좌표 데이터는 브라우저를 닫으면 사라집니다.
+      작업이 끝나면 반드시 「전체 내보내기 (ZIP)」 또는 「JSON 내보내기」로 저장해 두세요.<br>
+      모든 데이터는 이 브라우저 안에서만 처리되며 외부로 전송되지 않습니다.</p>
+  </div>
+</div>
+
+<main>
+  <div id="sidebar">
+    <div class="side-head"><span>이미지 목록</span><span id="totalCount">0장 / 박스 0개</span></div>
+    <ul id="imageList"></ul>
+    <div id="boxSection">
+      <div class="side-head"><span>현재 이미지 박스</span><span id="boxCount"></span></div>
+      <ul id="boxList"></ul>
+    </div>
+  </div>
+  <div id="stage">
+    <canvas id="canvas"></canvas>
+    <div id="emptyMsg">
+      <div style="font-size:34px">🖼️</div>
+      <div>이미지나 폴더를 이 영역에 드래그하거나<br>「이미지 열기」·「폴더 열기」 버튼으로 불러오세요</div>
+      <div style="font-size:12px">드래그로 박스 그리기 · 휠로 확대/축소 · <kbd>Space</kbd>+드래그로 화면 이동<br>
+      <kbd>←</kbd><kbd>→</kbd> 이미지 이동 · <kbd>Delete</kbd> 선택 박스 삭제 · 더블클릭으로 라벨 입력<br>
+      <kbd>Shift</kbd>+<kbd>←↑↓→</kbd> 선택 박스 1px 정밀 이동</div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <span id="convention">좌표 규약: 픽셀 단위 · 원점=이미지 좌상단 · x=가로(열), y=세로(행) · w/h=박스 너비/높이 · EXIF orientation 적용 <b>후</b>의 픽셀 기준</span>
+  <span id="statusMsg"></span>
+  <span id="cursorPos"></span>
+</footer>
+
+<script>
+'use strict';
+/* ════════════════════════════════════════════════════════════════
+   CropTrace — 모든 이미지/좌표 데이터는 브라우저 안에서만 처리됩니다.
+   외부 통신은 JSZip 라이브러리 로드(cdnjs) 단 하나뿐입니다.
+   ════════════════════════════════════════════════════════════════ */
+
+const DISPLAY_MAX = 1800;     // 표시용 축소본 최대 변 길이(px)
+const MIN_BOX = 2;            // 이보다 작은 박스는 버림 (원본 px)
+const HANDLE_PX = 7;          // 핸들 히트 반경 (화면 px)
+
+const $ = id => document.getElementById(id);
+const canvas = $('canvas'), ctx = canvas.getContext('2d');
+const stage = $('stage');
+
+const state = {
+  projects: [],        // {name, images: [...], pendingRestore: Map, lastIndex}
+  proj: -1,
+  images: [],          // 열려 있는 프로젝트의 images 배열을 그대로 참조 (별칭)
+  pendingRestore: new Map(),  // 열려 있는 프로젝트의 것을 그대로 참조 (별칭)
+  cur: -1,
+  sel: -1,
+  dirty: false,        // 내보내지 않은 변경이 있는가
+};
+
+const curImg = () => state.images[state.cur] || null;
+const curProj = () => state.projects[state.proj] || null;
+
+/* ── 프로젝트 ─────────────────────────────────────── */
+function createProject(name) {
+  name = name.trim();
+  if (!name) { $('projInput').focus(); return; }
+  if (state.projects.some(p => p.name === name)) { setStatus('같은 이름의 프로젝트가 이미 있습니다'); return; }
+  state.projects.push({ name, images: [], pendingRestore: new Map(), lastIndex: 0 });
+  $('projInput').value = '';
+  openProject(state.projects.length - 1);
+}
+
+function openProject(i) {
+  const p = state.projects[i]; if (!p) return;
+  state.proj = i;
+  state.images = p.images;               // 같은 배열 객체를 공유하므로 수정이 곧 프로젝트에 반영됨
+  state.pendingRestore = p.pendingRestore;
+  state.sel = -1;
+  state.cur = -1;
+  $('projName').textContent = p.name;
+  document.body.classList.remove('home-mode');
+  rebuildImageList();   // 다른 프로젝트의 목록이 남지 않도록 항상 새로 구성
+  resizeCanvas();
+  if (p.images.length) switchTo(clamp(p.lastIndex, 0, p.images.length - 1));
+  refreshUI();
+}
+
+function showHome() {
+  const p = curProj();
+  if (p) {
+    p.lastIndex = Math.max(0, state.cur);
+    const im = curImg();
+    if (im && im.full) { if (im.full.close) im.full.close(); im.full = null; }
+    p.images.forEach(freeDisp);  // 홈으로 나가면 축소본 메모리 전부 반환 (다시 열면 재디코드)
+  }
+  state.proj = -1; state.cur = -1; state.sel = -1;
+  state.images = []; state.pendingRestore = new Map();
+  document.body.classList.add('home-mode');
+  renderProjects();
+  $('projInput').focus();
+}
+
+function renderProjects() {
+  const ul = $('projList');
+  ul.innerHTML = '';
+  if (!state.projects.length) {
+    const li = document.createElement('li');
+    li.className = 'home-empty'; li.style.cursor = 'default';
+    li.textContent = '아직 프로젝트가 없습니다. 위에서 이름을 정하고 만들어보세요.';
+    ul.appendChild(li);
+    return;
+  }
+  state.projects.forEach((p, i) => {
+    const boxes = p.images.reduce((s, im) => s + im.boxes.length, 0);
+    const li = document.createElement('li');
+    const ic = document.createElement('span');
+    ic.className = 'picon'; ic.textContent = '📁';
+    const nm = document.createElement('span');
+    nm.className = 'pname'; nm.textContent = p.name; nm.title = p.name;
+    const meta = document.createElement('span');
+    meta.className = 'pmeta'; meta.textContent = `이미지 ${p.images.length}장 · 박스 ${boxes}개`;
+    const del = document.createElement('button');
+    del.className = 'pdel'; del.textContent = '✕'; del.title = '프로젝트 삭제';
+    del.onclick = ev => {
+      ev.stopPropagation();
+      if (boxes && !confirm(`프로젝트 "${p.name}"에 박스 ${boxes}개가 있습니다.\n내보내지 않았다면 사라집니다. 삭제할까요?`)) return;
+      state.projects.splice(i, 1);
+      renderProjects();
+    };
+    li.append(ic, nm, meta, del);
+    li.onclick = () => openProject(i);
+    ul.appendChild(li);
+  });
+}
+
+$('btnHome').onclick = showHome;
+$('logo').onclick = () => { if (state.proj >= 0) showHome(); };
+$('btnCreateProj').onclick = () => createProject($('projInput').value);
+$('projInput').addEventListener('keydown', e => { if (e.key === 'Enter') createProject($('projInput').value); });
+
+/* ── 유틸 ─────────────────────────────────────────── */
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const stem = name => name.replace(/\.[^.]+$/, '');
+const cropId = (img, i) => `${stem(img.name)}_crop${String(i).padStart(2, '0')}`;
+
+function setStatus(msg, ms = 4000) {
+  $('statusMsg').textContent = msg;
+  clearTimeout(setStatus._t);
+  if (ms) setStatus._t = setTimeout(() => { $('statusMsg').textContent = ''; }, ms);
+}
+
+function download(blob, filename) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+/* ── 이미지 디코드 (EXIF orientation 적용) ─────────── */
+// createImageBitmap의 imageOrientation 기본값이 'from-image'이므로
+// 디코드 결과는 항상 orientation 적용 후의 픽셀이다. 저장 좌표도 이 기준.
+async function decodeBitmap(file) {
+  try {
+    return await createImageBitmap(file, { imageOrientation: 'from-image' });
+  } catch (e) {
+    try { return await createImageBitmap(file); }
+    catch (e2) {
+      // 구형 브라우저 폴백: <img>도 EXIF orientation을 적용해 디코드함
+      return await new Promise((res, rej) => {
+        const url = URL.createObjectURL(file);
+        const im = new Image();
+        im.onload = () => { URL.revokeObjectURL(url); res(im); };
+        im.onerror = () => { URL.revokeObjectURL(url); rej(new Error('디코드 실패')); };
+        im.src = url;
+      });
+    }
+  }
+}
+
+/* ── 표시용 축소본(disp) 메모리 관리 ──────────────── */
+// 축소본이라도 장당 수 MB의 비압축 비트맵이므로, 현재 이미지 주변
+// 몇 장만 메모리에 유지하고 나머지는 해제했다가 필요할 때 다시 디코드한다.
+const DISP_RADIUS = 2;
+
+function makeDisp(full, W, H, scale) {
+  if (scale >= 1) return full;
+  const c = document.createElement('canvas');
+  c.width = Math.round(W * scale); c.height = Math.round(H * scale);
+  c.getContext('2d').drawImage(full, 0, 0, c.width, c.height);
+  if (full.close) full.close();  // 원본 비트맵은 즉시 해제, 필요할 때 다시 디코드
+  return c;
+}
+
+function freeDisp(img) {
+  if (!img.disp) return;
+  if (img.disp.close) img.disp.close();
+  else { img.disp.width = 0; img.disp.height = 0; }  // 캔버스 백킹 메모리 즉시 해제
+  img.disp = null;
+}
+
+function trimDisp() {
+  state.images.forEach((im, i) => {
+    if (Math.abs(i - state.cur) > DISP_RADIUS) freeDisp(im);
+  });
+}
+
+async function ensureDisp(img) {
+  if (!img || img.disp) return;
+  if (img.dispLoading) return img.dispLoading;
+  img.dispLoading = (async () => {
+    try {
+      const full = await decodeBitmap(img.file);
+      img.disp = makeDisp(full, img.width, img.height, img.dispScale);
+      if (img === curImg()) scheduleRender();
+    } catch (e) { /* 다음 렌더에서 재시도 */ }
+    finally { img.dispLoading = null; }
+  })();
+  return img.dispLoading;
+}
+
+async function addFiles(fileList) {
+  const files = [...fileList].filter(f => f.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(f.name));
+  if (!files.length) return;
+  let added = 0, skipped = 0;
+  for (const file of files) {
+    if (state.images.some(im => im.name === file.name)) { skipped++; continue; }
+    let full;
+    try { full = await decodeBitmap(file); }
+    catch (e) { setStatus(`"${file.name}" 을(를) 읽지 못했습니다`); continue; }
+    const W = full.naturalWidth || full.width, H = full.naturalHeight || full.height;
+
+    const scale = Math.min(1, DISPLAY_MAX / Math.max(W, H));
+    const disp = makeDisp(full, W, H, scale);
+    // 사이드바용 썸네일 (48×34 cover)
+    const tc = document.createElement('canvas');
+    tc.width = 48; tc.height = 34;
+    const dw = disp.width, dh = disp.height;
+    const sc = Math.max(48 / dw, 34 / dh);
+    tc.getContext('2d').drawImage(disp, (48 - dw * sc) / 2, (34 - dh * sc) / 2, dw * sc, dh * sc);
+
+    const img = {
+      name: file.name, file, width: W, height: H,
+      disp, dispScale: scale, full: null, thumb: tc.toDataURL('image/jpeg', 0.6),
+      boxes: [], view: null, restored: false,
+    };
+    // 이전 JSON에서 복원 대기 중인 박스가 있으면 적용
+    const pending = state.pendingRestore.get(file.name);
+    if (pending) {
+      img.boxes = pending.map(b => ({ ...b }));
+      img.restored = true;
+      state.pendingRestore.delete(file.name);
+    }
+    state.images.push(img);
+    // 지금 보고 있는 위치에서 먼 이미지는 축소본을 바로 해제 (폴더 대량 업로드 시 메모리 폭증 방지)
+    const base = state.cur < 0 ? 0 : state.cur;
+    if (Math.abs(state.images.length - 1 - base) > DISP_RADIUS) freeDisp(img);
+    added++;
+  }
+  if (skipped) setStatus(`중복 파일명 ${skipped}장은 건너뛰었습니다`);
+  if (added && state.cur < 0) switchTo(0);
+  refreshUI();
+}
+
+/* ── 이미지 전환 / 뷰 ─────────────────────────────── */
+function switchTo(i) {
+  if (i < 0 || i >= state.images.length) return;
+  const prev = curImg();
+  if (prev && prev.full) { if (prev.full.close) prev.full.close(); prev.full = null; }
+  state.cur = i;
+  state.sel = -1;
+  const img = curImg();
+  if (!img.view) fitView(img);
+  trimDisp();
+  ensureDisp(img);
+  if (state.images[i - 1]) ensureDisp(state.images[i - 1]);  // 이웃은 미리 디코드
+  if (state.images[i + 1]) ensureDisp(state.images[i + 1]);
+  refreshUI();
+}
+
+function fitView(img) {
+  const cw = stage.clientWidth, ch = stage.clientHeight;
+  const z = Math.min(cw / img.width, ch / img.height, 1) * 0.97;
+  img.view = {
+    zoom: z,
+    panX: (cw - img.width * z) / 2,
+    panY: (ch - img.height * z) / 2,
+  };
+}
+
+function zoomAt(sx, sy, factor) {
+  const img = curImg(); if (!img) return;
+  const v = img.view;
+  const nz = clamp(v.zoom * factor, 0.02, 40);
+  v.panX = sx - (sx - v.panX) * (nz / v.zoom);
+  v.panY = sy - (sy - v.panY) * (nz / v.zoom);
+  v.zoom = nz;
+  ensureFullRes();
+  scheduleRender();
+  $('zoomLevel').textContent = Math.round(nz * 100) + '%';
+}
+
+// 확대 배율이 축소본 배율을 넘으면 현재 이미지만 원본 해상도를 다시 디코드
+let fullResToken = 0;
+async function ensureFullRes() {
+  const img = curImg(); if (!img) return;
+  if (img.dispScale >= 1) return;
+  if (img.view.zoom <= img.dispScale || img.full || img.fullLoading) return;
+  img.fullLoading = true;   // 휠 줌 연타 시 디코드가 중복 시작되지 않도록
+  const token = ++fullResToken, idx = state.cur;
+  try {
+    const bmp = await decodeBitmap(img.file);
+    if (token !== fullResToken || state.cur !== idx) { if (bmp.close) bmp.close(); return; }
+    img.full = bmp;
+    scheduleRender();
+  } catch (e) { /* 축소본으로 계속 표시 */ }
+  finally { img.fullLoading = false; }
+}
+
+/* ── 렌더링 ───────────────────────────────────────── */
+// 입력 이벤트(pointermove/wheel)는 화면 주사율보다 빠르게 들어올 수 있으므로
+// 렌더를 requestAnimationFrame으로 프레임당 한 번으로 합친다.
+let renderQueued = false;
+function scheduleRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => { renderQueued = false; render(); });
+}
+
+function resizeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(stage.clientWidth * dpr);
+  canvas.height = Math.round(stage.clientHeight * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const img = curImg();
+  if (img && !img.view) fitView(img);
+  scheduleRender();
+}
+
+function render() {
+  const img = curImg();
+  ctx.save();
+  ctx.setTransform(window.devicePixelRatio || 1, 0, 0, window.devicePixelRatio || 1, 0, 0);
+  ctx.clearRect(0, 0, stage.clientWidth, stage.clientHeight);
+  $('emptyMsg').style.display = img ? 'none' : 'flex';
+  if (!img) { ctx.restore(); return; }
+
+  const v = img.view;
+  const useFull = img.full && v.zoom > img.dispScale;
+  const src = useFull ? img.full : img.disp;
+  if (src) {
+    const sw = useFull ? img.width : src.width, sh = useFull ? img.height : src.height;
+    ctx.imageSmoothingEnabled = v.zoom < 1;
+    ctx.drawImage(src, 0, 0, sw, sh, v.panX, v.panY, img.width * v.zoom, img.height * v.zoom);
+  } else {
+    // 축소본이 해제된 상태 → 재디코드 요청 (완료되면 자동 재렌더)
+    ensureDisp(img);
+    ctx.fillStyle = '#8b93a7'; ctx.font = '13px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('이미지 불러오는 중…', v.panX + img.width * v.zoom / 2, v.panY + img.height * v.zoom / 2);
+    ctx.textAlign = 'left';
+  }
+
+  // 이미지 경계
+  ctx.strokeStyle = '#4a5468'; ctx.lineWidth = 1;
+  ctx.strokeRect(v.panX - .5, v.panY - .5, img.width * v.zoom + 1, img.height * v.zoom + 1);
+
+  // 박스들
+  img.boxes.forEach((b, i) => drawBox(b, i === state.sel, v));
+  if (drag && drag.mode === 'draw' && drag.box) drawBox(drag.box, true, v, true);
+  ctx.restore();
+}
+
+function drawBox(b, selected, v, drawing = false) {
+  const x = v.panX + b.x * v.zoom, y = v.panY + b.y * v.zoom;
+  const w = b.w * v.zoom, h = b.h * v.zoom;
+  ctx.lineWidth = selected ? 2 : 1.5;
+  ctx.strokeStyle = selected ? '#ffb84d' : '#4da3ff';
+  ctx.fillStyle = selected ? 'rgba(255,184,77,.10)' : 'rgba(77,163,255,.07)';
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeRect(x, y, w, h);
+
+  // 라벨 텍스트 (박스 좌상단 안쪽)
+  if (b.label) {
+    ctx.font = '11px sans-serif';
+    const tw = ctx.measureText(b.label).width;
+    ctx.fillStyle = 'rgba(0,0,0,.65)';
+    ctx.fillRect(x, y, tw + 10, 16);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(b.label, x + 5, y + 12);
+  }
+
+  // 좌표 실시간 표시 (선택/그리는 중인 박스)
+  if (selected || drawing) {
+    const t = `x:${Math.round(b.x)}  y:${Math.round(b.y)}  w:${Math.round(b.w)}  h:${Math.round(b.h)}`;
+    ctx.font = '11.5px ui-monospace, Menlo, monospace';
+    const tw = ctx.measureText(t).width;
+    let ty = y - 22;
+    if (ty < 2) ty = y + h + 4;
+    ctx.fillStyle = 'rgba(0,0,0,.75)';
+    ctx.fillRect(x, ty, tw + 12, 18);
+    ctx.fillStyle = '#ffd9a0';
+    ctx.fillText(t, x + 6, ty + 13);
+  }
+
+  // 모서리 핸들
+  if (selected && !drawing) {
+    ctx.fillStyle = '#ffb84d'; ctx.strokeStyle = '#1b1e24';
+    for (const [hx, hy] of corners(b, v)) {
+      ctx.fillRect(hx - 4, hy - 4, 8, 8);
+      ctx.strokeRect(hx - 4.5, hy - 4.5, 9, 9);
+    }
+  }
+}
+
+const corners = (b, v) => [
+  [v.panX + b.x * v.zoom,             v.panY + b.y * v.zoom],              // nw
+  [v.panX + (b.x + b.w) * v.zoom,     v.panY + b.y * v.zoom],              // ne
+  [v.panX + b.x * v.zoom,             v.panY + (b.y + b.h) * v.zoom],      // sw
+  [v.panX + (b.x + b.w) * v.zoom,     v.panY + (b.y + b.h) * v.zoom],      // se
+];
+const CORNER_NAMES = ['nw', 'ne', 'sw', 'se'];
+const CORNER_CURSOR = { nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize' };
+
+/* ── 좌표 변환 / 히트테스트 ───────────────────────── */
+function toImg(e) {
+  const r = canvas.getBoundingClientRect();
+  const sx = e.clientX - r.left, sy = e.clientY - r.top;
+  const v = curImg().view;
+  return { sx, sy, x: (sx - v.panX) / v.zoom, y: (sy - v.panY) / v.zoom };
+}
+
+function handleAt(sx, sy) {
+  const img = curImg();
+  if (state.sel < 0) return null;
+  const b = img.boxes[state.sel];
+  const cs = corners(b, img.view);
+  for (let i = 0; i < 4; i++) {
+    if (Math.abs(sx - cs[i][0]) <= HANDLE_PX && Math.abs(sy - cs[i][1]) <= HANDLE_PX)
+      return CORNER_NAMES[i];
+  }
+  return null;
+}
+
+function boxAt(x, y) {
+  const img = curImg();
+  for (let i = img.boxes.length - 1; i >= 0; i--) {
+    const b = img.boxes[i];
+    if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return i;
+  }
+  return -1;
+}
+
+// 원본 픽셀 정수 좌표로 커밋 (경계 clamp 포함)
+function commitBox(b, img) {
+  let x1 = clamp(Math.round(b.x), 0, img.width);
+  let y1 = clamp(Math.round(b.y), 0, img.height);
+  let x2 = clamp(Math.round(b.x + b.w), 0, img.width);
+  let y2 = clamp(Math.round(b.y + b.h), 0, img.height);
+  if (x2 - x1 < 1) x2 = Math.min(x1 + 1, img.width), x1 = x2 - 1;
+  if (y2 - y1 < 1) y2 = Math.min(y1 + 1, img.height), y1 = y2 - 1;
+  b.x = x1; b.y = y1; b.w = x2 - x1; b.h = y2 - y1;
+}
+
+/* ── 포인터 인터랙션 ──────────────────────────────── */
+let drag = null;       // {mode, ...}
+let spaceDown = false;
+
+canvas.addEventListener('pointerdown', e => {
+  const img = curImg(); if (!img) return;
+  canvas.setPointerCapture(e.pointerId);
+  const p = toImg(e);
+
+  if (spaceDown || e.button === 1) {
+    drag = { mode: 'pan', sx: p.sx, sy: p.sy, panX: img.view.panX, panY: img.view.panY };
+    return;
+  }
+  if (e.button !== 0) return;
+
+  const hnd = handleAt(p.sx, p.sy);
+  if (hnd) {
+    const b = img.boxes[state.sel];
+    // 잡은 모서리의 반대편 모서리를 고정점으로
+    const ax = hnd.includes('w') ? b.x + b.w : b.x;
+    const ay = hnd.includes('n') ? b.y + b.h : b.y;
+    drag = { mode: 'resize', ax, ay, box: b };
+    return;
+  }
+  const hit = boxAt(p.x, p.y);
+  if (hit >= 0) {
+    state.sel = hit;
+    const b = img.boxes[hit];
+    drag = { mode: 'move', x0: p.x, y0: p.y, bx: b.x, by: b.y, box: b, moved: false };
+    syncLabelInput(); scheduleRender();
+    return;
+  }
+  // 빈 곳: 새 박스 그리기 시작
+  state.sel = -1; syncLabelInput();
+  drag = {
+    mode: 'draw',
+    x0: clamp(p.x, 0, img.width), y0: clamp(p.y, 0, img.height),
+    box: null,
+  };
+  scheduleRender();
+});
+
+canvas.addEventListener('pointermove', e => {
+  const img = curImg(); if (!img) return;
+  const p = toImg(e);
+  $('cursorPos').textContent =
+    (p.x >= 0 && p.y >= 0 && p.x <= img.width && p.y <= img.height)
+      ? `커서: (${Math.round(p.x)}, ${Math.round(p.y)})  ·  원본 ${img.width}×${img.height}px`
+      : `원본 ${img.width}×${img.height}px`;
+
+  if (!drag) {  // 커서 모양만 갱신
+    const hnd = handleAt(p.sx, p.sy);
+    canvas.style.cursor = spaceDown ? 'grab'
+      : hnd ? CORNER_CURSOR[hnd]
+      : boxAt(p.x, p.y) >= 0 ? 'move' : 'crosshair';
+    return;
+  }
+
+  const v = img.view;
+  if (drag.mode === 'pan') {
+    v.panX = drag.panX + (p.sx - drag.sx);
+    v.panY = drag.panY + (p.sy - drag.sy);
+    canvas.style.cursor = 'grabbing';
+  } else if (drag.mode === 'draw') {
+    const cx = clamp(p.x, 0, img.width), cy = clamp(p.y, 0, img.height);
+    drag.box = {
+      x: Math.min(drag.x0, cx), y: Math.min(drag.y0, cy),
+      w: Math.abs(cx - drag.x0), h: Math.abs(cy - drag.y0), label: '',
+    };
+  } else if (drag.mode === 'move') {
+    const b = drag.box;
+    b.x = clamp(drag.bx + (p.x - drag.x0), 0, img.width - b.w);
+    b.y = clamp(drag.by + (p.y - drag.y0), 0, img.height - b.h);
+    drag.moved = true;
+  } else if (drag.mode === 'resize') {
+    const b = drag.box;
+    const cx = clamp(p.x, 0, img.width), cy = clamp(p.y, 0, img.height);
+    b.x = Math.min(drag.ax, cx); b.w = Math.abs(cx - drag.ax);
+    b.y = Math.min(drag.ay, cy); b.h = Math.abs(cy - drag.ay);
+  }
+  scheduleRender();
+});
+
+canvas.addEventListener('pointerup', e => {
+  const img = curImg();
+  if (!img || !drag) { drag = null; return; }
+  if (drag.mode === 'draw') {
+    if (drag.box && drag.box.w >= MIN_BOX && drag.box.h >= MIN_BOX) {
+      commitBox(drag.box, img);
+      img.boxes.push(drag.box);
+      state.sel = img.boxes.length - 1;
+      state.dirty = true;
+      syncLabelInput();
+      refreshUI();
+    }
+  } else if (drag.mode === 'move' || drag.mode === 'resize') {
+    commitBox(drag.box, img);
+    if (drag.mode !== 'move' || drag.moved) state.dirty = true;
+    renderBoxList();
+  }
+  drag = null;
+  scheduleRender();
+});
+
+canvas.addEventListener('dblclick', e => {
+  const p = toImg(e);
+  if (curImg() && boxAt(p.x, p.y) >= 0) $('labelInput').focus();
+});
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  if (!curImg()) return;
+  const r = canvas.getBoundingClientRect();
+  zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * 0.0015));
+}, { passive: false });
+
+/* ── 키보드 ───────────────────────────────────────── */
+window.addEventListener('keydown', e => {
+  const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
+  if (e.code === 'Space' && !typing) { spaceDown = true; e.preventDefault(); canvas.style.cursor = 'grab'; }
+  if (typing) return;
+  if (e.key === 'Delete' || e.key === 'Backspace') { deleteSelected(); e.preventDefault(); }
+  else if (e.key.startsWith('Arrow')) {
+    const img = curImg();
+    if (e.shiftKey && img && state.sel >= 0) {
+      // Shift+화살표: 선택 박스 1px 정밀 이동
+      const b = img.boxes[state.sel];
+      const dx = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+      const dy = e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0;
+      b.x = clamp(b.x + dx, 0, img.width - b.w);
+      b.y = clamp(b.y + dy, 0, img.height - b.h);
+      state.dirty = true;
+      scheduleRender();
+      renderBoxList();
+    } else if (e.key === 'ArrowLeft') switchTo(state.cur - 1);
+    else if (e.key === 'ArrowRight') switchTo(state.cur + 1);
+    e.preventDefault();
+  }
+  else if (e.key === 'Escape') { state.sel = -1; syncLabelInput(); scheduleRender(); }
+});
+window.addEventListener('keyup', e => {
+  if (e.code === 'Space') { spaceDown = false; canvas.style.cursor = 'crosshair'; }
+});
+
+function deleteSelected() {
+  const img = curImg();
+  if (!img || state.sel < 0) return;
+  img.boxes.splice(state.sel, 1);
+  state.sel = -1;
+  state.dirty = true;
+  syncLabelInput();
+  refreshUI();
+}
+
+/* ── 박스 목록 패널 ───────────────────────────────── */
+function centerOnBox(b) {
+  const img = curImg(); if (!img) return;
+  const v = img.view;
+  v.panX = stage.clientWidth / 2 - (b.x + b.w / 2) * v.zoom;
+  v.panY = stage.clientHeight / 2 - (b.y + b.h / 2) * v.zoom;
+}
+
+function renderBoxList() {
+  const ul = $('boxList');
+  ul.innerHTML = '';
+  const img = curImg();
+  $('boxCount').textContent = img && img.boxes.length ? `${img.boxes.length}개` : '';
+  if (!img) return;
+  if (!img.boxes.length) {
+    const li = document.createElement('li');
+    li.className = 'box-empty';
+    li.textContent = '이미지 위에서 드래그해 박스를 그려보세요';
+    ul.appendChild(li);
+    return;
+  }
+  img.boxes.forEach((b, i) => {
+    const li = document.createElement('li');
+    if (i === state.sel) li.className = 'active';
+    const idx = document.createElement('span');
+    idx.className = 'bidx'; idx.textContent = 'crop' + String(i).padStart(2, '0');
+    const lb = document.createElement('span');
+    lb.className = 'blabel' + (b.label ? '' : ' empty');
+    lb.textContent = b.label || '라벨 없음'; lb.title = b.label || '';
+    const co = document.createElement('span');
+    co.className = 'bcoord'; co.textContent = `${b.w}×${b.h}`;
+    co.title = `x:${b.x} y:${b.y} w:${b.w} h:${b.h}`;
+    const del = document.createElement('button');
+    del.className = 'bdel'; del.textContent = '✕'; del.title = '박스 삭제';
+    del.onclick = ev => {
+      ev.stopPropagation();
+      img.boxes.splice(i, 1);
+      if (state.sel === i) state.sel = -1;
+      else if (state.sel > i) state.sel--;
+      state.dirty = true;
+      refreshUI();
+    };
+    li.append(idx, lb, co, del);
+    li.onclick = () => {   // 클릭하면 해당 박스를 선택하고 화면 중앙으로
+      state.sel = i;
+      centerOnBox(b);
+      syncLabelInput();
+      scheduleRender();
+    };
+    ul.appendChild(li);
+  });
+}
+
+/* ── 라벨 입력 ────────────────────────────────────── */
+function syncLabelInput() {
+  const img = curImg();
+  const has = img && state.sel >= 0;
+  $('labelInput').disabled = !has;
+  $('btnDelete').disabled = !has;
+  $('labelInput').value = has ? (img.boxes[state.sel].label || '') : '';
+  renderBoxList();
+}
+$('labelInput').addEventListener('input', () => {
+  const img = curImg();
+  if (img && state.sel >= 0) {
+    const val = $('labelInput').value;
+    img.boxes[state.sel].label = val;
+    state.dirty = true;
+    scheduleRender();
+    // 키 입력마다 목록 전체를 다시 만들지 않고 해당 항목의 라벨만 갱신
+    const li = $('boxList').children[state.sel];
+    const lb = li && li.querySelector('.blabel');
+    if (lb) {
+      lb.textContent = val || '라벨 없음';
+      lb.title = val;
+      lb.classList.toggle('empty', !val);
+    }
+  }
+});
+$('labelInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === 'Escape') $('labelInput').blur();
+});
+$('btnDelete').addEventListener('click', deleteSelected);
+
+/* ── 사이드바 / UI 갱신 ───────────────────────────── */
+// 이미지 목록 DOM 전체를 만드는 것은 이미지 구성이 바뀔 때뿐이고,
+// 박스 생성/삭제/전환 때는 refreshUI가 기존 항목의 값만 갱신한다.
+function rebuildImageList() {
+  const list = $('imageList');
+  list.innerHTML = '';
+  state.images.forEach((img, i) => {
+    const li = document.createElement('li');
+    const th = document.createElement('img');
+    th.className = 'thumb'; th.src = img.thumb; th.alt = '';
+    const fn = document.createElement('span');
+    fn.className = 'fname'; fn.textContent = img.name; fn.title = `${img.name} (${img.width}×${img.height})`;
+    const r = document.createElement('span');
+    r.className = 'restored'; r.textContent = '↺'; r.title = 'JSON에서 복원됨';
+    const c = document.createElement('span');
+    c.className = 'count';
+    li.append(th, fn, r, c);
+    li.onclick = () => switchTo(i);
+    list.appendChild(li);
+  });
+}
+
+function refreshUI() {
+  const list = $('imageList');
+  if (list.children.length !== state.images.length) rebuildImageList();
+  let total = 0;
+  state.images.forEach((img, i) => {
+    total += img.boxes.length;
+    const li = list.children[i];
+    li.classList.toggle('active', i === state.cur);
+    li.querySelector('.count').textContent = img.boxes.length;
+    li.querySelector('.restored').hidden = !img.restored;
+  });
+  $('totalCount').textContent = `${state.images.length}장 / 박스 ${total}개`;
+  const img = curImg();
+  $('zoomLevel').textContent = img ? Math.round(img.view.zoom * 100) + '%' : '—';
+  $('btnPrev').disabled = state.cur <= 0;
+  $('btnNext').disabled = state.cur >= state.images.length - 1;
+  const hasBoxes = state.images.some(im => im.boxes.length);
+  $('btnCsv').disabled = !hasBoxes;
+  $('btnJson').disabled = !hasBoxes;
+  // 전체 내보내기는 박스 없는 이미지(원본 복사)도 포함하므로 이미지만 있으면 가능
+  $('btnZip').disabled = !state.images.length || !window.JSZip;
+  syncLabelInput();
+  scheduleRender();
+}
+
+/* ── 파일 열기 / 드래그앤드롭 ─────────────────────── */
+$('btnOpen').onclick = () => $('fileInput').click();
+$('fileInput').addEventListener('change', e => { addFiles(e.target.files); e.target.value = ''; });
+$('btnOpenDir').onclick = () => $('dirInput').click();
+$('dirInput').addEventListener('change', e => { addFiles(e.target.files); e.target.value = ''; });
+
+// 드롭된 항목에 폴더가 있으면 재귀적으로 내부 파일까지 수집
+async function filesFromDataTransfer(dt) {
+  // webkitGetAsEntry는 drop 이벤트 처리 중(동기)에만 유효하므로 먼저 추출
+  const entries = [...(dt.items || [])]
+    .map(it => it.webkitGetAsEntry && it.webkitGetAsEntry())
+    .filter(Boolean);
+  if (!entries.length) return [...dt.files];
+  const files = [];
+  async function walk(entry) {
+    if (entry.isFile) {
+      try { files.push(await new Promise((res, rej) => entry.file(res, rej))); } catch (e) {}
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      let batch;   // readEntries는 한 번에 최대 100개씩만 반환
+      do {
+        batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+        for (const en of batch) await walk(en);
+      } while (batch.length);
+    }
+  }
+  for (const en of entries) await walk(en);
+  return files;
+}
+$('btnPrev').onclick = () => switchTo(state.cur - 1);
+$('btnNext').onclick = () => switchTo(state.cur + 1);
+$('btnZoomIn').onclick = () => zoomAt(stage.clientWidth / 2, stage.clientHeight / 2, 1.25);
+$('btnZoomOut').onclick = () => zoomAt(stage.clientWidth / 2, stage.clientHeight / 2, 0.8);
+$('btnFit').onclick = () => { const im = curImg(); if (im) { fitView(im); ensureFullRes(); refreshUI(); } };
+$('zoomLevel').onclick = () => $('btnFit').click();
+$('btnZoom100').onclick = () => {
+  const im = curImg(); if (!im) return;
+  const f = 1 / im.view.zoom;
+  zoomAt(stage.clientWidth / 2, stage.clientHeight / 2, f);
+};
+
+['dragenter', 'dragover'].forEach(ev => window.addEventListener(ev, e => {
+  e.preventDefault();
+  if (state.proj >= 0) stage.classList.add('dragover');
+}));
+['dragleave', 'drop'].forEach(ev => window.addEventListener(ev, e => {
+  e.preventDefault();
+  if (ev === 'drop' || e.target === document.documentElement || !stage.contains(e.target))
+    stage.classList.remove('dragover');
+}));
+window.addEventListener('drop', async e => {
+  if (!e.dataTransfer) return;
+  if (state.proj < 0) { setStatus('먼저 프로젝트를 만들거나 선택해주세요'); return; }
+  const files = await filesFromDataTransfer(e.dataTransfer);
+  if (files.length) addFiles(files);
+});
+
+/* ── CSV ──────────────────────────────────────────── */
+function csvEscape(v) {
+  v = String(v ?? '');
+  return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+}
+
+function buildCsv() {
+  const rows = [['crop_id', 'image_filename', 'image_width', 'image_height', 'x', 'y', 'w', 'h', 'label']];
+  for (const img of state.images)
+    img.boxes.forEach((b, i) => rows.push([
+      cropId(img, i), img.name, img.width, img.height, b.x, b.y, b.w, b.h, b.label || '',
+    ]));
+  return rows.map(r => r.map(csvEscape).join(',')).join('\r\n') + '\r\n';
+}
+
+$('btnCsv').onclick = () => {
+  // BOM: Excel에서 한글 라벨이 깨지지 않도록
+  download(new Blob(['﻿' + buildCsv()], { type: 'text/csv;charset=utf-8' }), 'crops.csv');
+  state.dirty = false;
+  setStatus('crops.csv 내보내기 완료');
+};
+
+/* ── JSON 내보내기 (SHA-256 포함) ─────────────────── */
+async function sha256Hex(file) {
+  if (!crypto.subtle) return null;   // 비보안 컨텍스트 등
+  const buf = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+$('btnJson').onclick = async () => {
+  const btn = $('btnJson');
+  btn.disabled = true;
+  try {
+    const images = [];
+    for (const img of state.images) {
+      if (!img.boxes.length) continue;
+      if (img.hash === undefined || img.hash === null) {
+        setStatus(`SHA-256 계산 중: ${img.name}…`, 0);
+        try { img.hash = await sha256Hex(img.file); }
+        catch (e) { img.hash = null; }
+      }
+      images.push({
+        filename: img.name,
+        image_width: img.width,
+        image_height: img.height,
+        sha256: img.hash,   // 원본 파일 바이트 기준
+        crops: img.boxes.map((b, i) => ({
+          crop_id: cropId(img, i),
+          x: b.x, y: b.y, w: b.w, h: b.h, label: b.label || '',
+        })),
+      });
+    }
+    const doc = {
+      tool: 'CropTrace',
+      version: '1.1',
+      project: curProj() ? curProj().name : null,
+      exported_at: new Date().toISOString(),
+      coordinate_convention: {
+        units: 'pixels',
+        origin: 'top-left',
+        x: 'column (horizontal)',
+        y: 'row (vertical)',
+        w_h: 'box width / height',
+        // 좌표는 EXIF orientation을 "적용한 후"의 픽셀 기준.
+        // sha256은 orientation 적용 전의 원본 파일 바이트 기준.
+        coordinates_applied_after_exif_orientation: true,
+        sha256_of: 'original file bytes (before orientation)',
+      },
+      images,
+    };
+    download(new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' }), 'crops.json');
+    state.dirty = false;
+    setStatus('crops.json 내보내기 완료');
+  } finally {
+    btn.disabled = false;
+    refreshUI();
+  }
+};
+
+/* ── JSON 불러오기 (작업 이어하기) ─────────────────── */
+$('btnImportJson').onclick = () => $('jsonInput').click();
+$('jsonInput').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  let doc;
+  try { doc = JSON.parse(await file.text()); }
+  catch (err) { setStatus('JSON 파싱 실패: 올바른 파일인지 확인하세요'); return; }
+  if (!doc || !Array.isArray(doc.images)) { setStatus('CropTrace JSON 형식이 아닙니다'); return; }
+
+  let applied = 0, pending = 0;
+  for (const rec of doc.images) {
+    if (!rec.filename || !Array.isArray(rec.crops)) continue;
+    const boxes = rec.crops
+      .filter(c => [c.x, c.y, c.w, c.h].every(Number.isFinite))
+      .map(c => ({ x: c.x, y: c.y, w: c.w, h: c.h, label: c.label || '' }));
+    const img = state.images.find(im => im.name === rec.filename);
+    if (img) {
+      img.boxes = boxes.map(b => { commitBox(b, img); return b; });
+      img.restored = true;
+      applied++;
+    } else {
+      state.pendingRestore.set(rec.filename, boxes);
+      pending++;
+    }
+  }
+  state.sel = -1;
+  refreshUI();
+  setStatus(`박스 복원: 이미지 ${applied}장 적용` + (pending ? `, ${pending}장은 해당 이미지를 열면 복원됩니다` : ''), 8000);
+});
+
+/* ── 전체 내보내기 (ZIP) ──────────────────────────── */
+// 프로젝트의 모든 크롭 PNG + crops.csv를 프로젝트 이름 폴더로 묶어 저장.
+// 박스가 없는 이미지는 원본 파일을 그대로 포함한다.
+const safeName = s => s.replace(/[\\/:*?"<>|]/g, '_').trim() || 'project';
+
+$('btnZip').onclick = async () => {
+  if (!window.JSZip || !curProj()) return;
+  const btn = $('btnZip');
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  try {
+    const root = safeName(curProj().name);
+    const zip = new JSZip();
+    if (state.images.some(im => im.boxes.length))
+      zip.file(`${root}/crops.csv`, '﻿' + buildCsv());
+
+    const jobs = [];
+    let originals = 0;
+    for (const img of state.images) {
+      if (!img.boxes.length) {
+        zip.file(`${root}/${img.name}`, img.file);  // 박스 없음 → 원본 그대로
+        originals++;
+        continue;
+      }
+      img.boxes.forEach((b, i) => jobs.push({ img, b, id: cropId(img, i) }));
+    }
+
+    let done = 0;
+    let lastImg = null, bmp = null;
+    for (const { img, b, id } of jobs) {
+      btn.textContent = `크롭 중… ${++done}/${jobs.length}`;
+      if (img !== lastImg) {
+        if (bmp && bmp.close && bmp !== lastImg?.disp && bmp !== lastImg?.full) bmp.close();
+        // 크롭은 항상 원본 해상도로 다시 디코드해서 수행 (축소본 미사용)
+        bmp = (img.dispScale >= 1 && img.disp) ? img.disp : (img.full || await decodeBitmap(img.file));
+        lastImg = img;
+      }
+      const c = document.createElement('canvas');
+      c.width = b.w; c.height = b.h;
+      const cctx = c.getContext('2d');
+      cctx.imageSmoothingEnabled = false;
+      // 원본 픽셀 좌표 그대로, 리사이즈/보간 없이 1:1 추출
+      cctx.drawImage(bmp, b.x, b.y, b.w, b.h, 0, 0, b.w, b.h);
+      const blob = await new Promise(res => c.toBlob(res, 'image/png'));
+      zip.file(`${root}/${id}.png`, blob);
+    }
+    if (bmp && bmp.close && lastImg && bmp !== lastImg.disp && bmp !== lastImg.full) bmp.close();
+
+    btn.textContent = 'ZIP 생성 중…';
+    const blob = await zip.generateAsync({ type: 'blob' });
+    download(blob, `${root}.zip`);
+    state.dirty = false;
+    setStatus(`"${root}.zip" 저장: 크롭 ${jobs.length}개, 원본 ${originals}장` +
+              (jobs.length ? ' + crops.csv' : ''));
+  } catch (err) {
+    setStatus('ZIP 저장 중 오류: ' + err.message, 8000);
+  } finally {
+    btn.textContent = oldText;
+    btn.disabled = false;
+    refreshUI();
+  }
+};
+
+/* ── 이탈 경고 / 초기화 ───────────────────────────── */
+window.addEventListener('beforeunload', e => {
+  if (state.dirty) { e.preventDefault(); e.returnValue = ''; }
+});
+
+window.addEventListener('resize', resizeCanvas);
+new ResizeObserver(resizeCanvas).observe(stage);
+
+window.addEventListener('DOMContentLoaded', () => {
+  if (!window.JSZip) {
+    $('btnZip').disabled = true;
+    $('btnZip').title = '인터넷 연결이 없어 JSZip을 불러오지 못했습니다. CSV/JSON 내보내기는 정상 동작합니다.';
+    setStatus('오프라인: ZIP 저장만 비활성화되었습니다 (나머지 기능은 정상)', 8000);
+  }
+  showHome();
+});
+</script>
+</body>
+</html>
